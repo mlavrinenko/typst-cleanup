@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>typst-cleanup</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 4rem auto; padding: 0 1rem; line-height: 1.6; }
+    h1 { margin-bottom: 0.25rem; }
+    code { background: #f4f4f4; padding: 0.15em 0.4em; border-radius: 3px; }
+    pre code { display: block; padding: 1em; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>typst-cleanup</h1>
+  <p>Consumer-blind orchestration for retiring Typst artifacts: dirty-tree guard, SWHID tombstone minting, and atomic inbound-link rewriting</p>
+
+  <h2>Install</h2>
+
+  <pre><code>cargo add typst-cleanup</code></pre>
+
+  <h2>Usage</h2>
+
+  <pre><code>let root = toplevel(Path::new("."))?;
+let computed = plan(&amp;eligible, &amp;survivors, &amp;root, &amp;policy)?;
+apply(&amp;computed)?;</code></pre>
+
+  <footer>
+    <p><a href="https://github.com/mlavrinenko/typst-cleanup">GitHub</a></p>
+  </footer>
+</body>
+</html>

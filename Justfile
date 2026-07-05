@@ -1,0 +1,102 @@
+set quiet := true
+
+# List available recipes
+default:
+    @just --list
+
+# Run fixes, then other checks
+fix-check: eject fmt clippy-fix check
+
+# Run all checks in parallel (fmt + clippy + tests + unused deps + file size + drift)
+check:
+    parallel -j 0 -- \
+        "chronic just fmt-check" \
+        "chronic cargo clippy --workspace --all-targets -q -- -D warnings" \
+        "chronic cargo test --workspace -q" \
+        "chronic just machete" \
+        "chronic just check-file-size" \
+        "chronic just outdatty-check"
+
+# Fail if a source changed without its dependents being re-confirmed
+outdatty-check:
+    outdatty check --format quiet
+
+# Re-confirm dependency groups: record current hashes into outdatty.lock
+outdatty-update:
+    outdatty update
+
+# Run tests only
+test *ARGS:
+    cargo test --workspace {{ ARGS }}
+
+# Run clippy only
+clippy:
+    cargo clippy --workspace --all-targets -q -- -D warnings
+
+# Auto-fix clippy warnings (allow-dirty/-staged: fix-check runs pre-commit, tree is dirty).
+# Restore write on target/ first: tarpaulin (`just cover`/`just crap`) leaves *.rmeta
+# artifacts read-only, and `clippy --fix` then aborts with "output file ... is not
+# writeable". Cheap self-heal so `fix-check` after `cover`/`crap` never trips on it.
+clippy-fix:
+    chmod -R u+w target 2>/dev/null || true
+    cargo clippy --fix --workspace --all-targets --allow-dirty --allow-staged -- -D warnings
+
+# Build the project
+build *args:
+    cargo build --workspace -q {{ args }}
+
+# Run coverage with tarpaulin (also writes target/coverage/lcov.info).
+# --all-features so optional-feature code is measured, not silently skipped.
+cover:
+    cargo tarpaulin --workspace --all-features --skip-clean
+
+# Gate complex, undertested functions via CRAP metric. Needs lcov from `just
+# cover` first. Threshold 30 is a sane greenfield default; tune per repo.
+# cargo-crap has no --all-features flag: it statically reads source + the lcov
+# already produced by `just cover --all-features`, it doesn't build anything.
+crap:
+    cargo crap --lcov target/coverage/lcov.info --workspace --exclude 'src/main.rs' --threshold 30 --fail-above
+
+# Format code
+fmt:
+    cargo fmt --all
+
+# Format check (CI-friendly)
+fmt-check:
+    cargo fmt --all -- --check
+
+# Check for unused dependencies
+machete:
+    cargo machete
+
+# Count tests across workspace
+count-tests:
+    #!/usr/bin/env bash
+    cargo test --workspace 2>&1 | grep "test result:" | awk '{sum += $4} END {print sum " tests"}'
+
+# Show top 20 files by line count
+file-sizes:
+    #!/usr/bin/env bash
+    find . -type f \( -name '*.rs' -o -name '*.md' \) ! -path './target/*' -exec wc -l {} + | sort -rn | head -20
+
+# Eject inline tests from Rust files nearing the linecop limit, so they stay
+# under it without losing the inline-test workflow. Runs as part of `fix-check`.
+eject PCT='90':
+    linecop --baseline {{ PCT }} --format paths | ejectest apply src --files-from - --lenient
+
+# Check for oversized files (fails if any exceed limits)
+check-file-size:
+    linecop
+
+# Tag a release and push (usage: just release 0.1.0)
+release VERSION:
+    #!/usr/bin/env bash
+    set -eo pipefail
+    cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    if [ "{{ VERSION }}" != "$cargo_version" ]; then
+        echo "error: requested v{{ VERSION }} but Cargo.toml is $cargo_version; bump Cargo.toml first" >&2
+        exit 1
+    fi
+    just check
+    git tag -a "v{{ VERSION }}" -m "v{{ VERSION }}"
+    git push origin "v{{ VERSION }}"
