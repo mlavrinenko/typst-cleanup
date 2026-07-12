@@ -17,13 +17,15 @@ cargo add typst-cleanup
 ```rust
 use typst_cleanup::{Artifact, Policy, Swhid, apply, is_clean, plan, toplevel};
 
-// The crate is consumer-blind: it knows nothing about what an artifact *is*.
-// Supply identity (which link() URLs name artifacts) and tombstone policy.
+// The crate is consumer-blind: it knows nothing about what an artifact *is* or
+// how its inbound edges are spelled. Supply identity (which targets name
+// artifacts) and the tombstone label. The default scan finds `link("…")` calls;
+// override `scan` to retarget a DSL's own edge helpers (e.g. `depends-on("…")`).
 struct Stems;
 
 impl Policy for Stems {
-    fn link_identity(&self, url: &str) -> Option<String> {
-        Some(std::path::Path::new(url).file_stem()?.to_string_lossy().into_owned())
+    fn identity(&self, raw: &str) -> Option<String> {
+        Some(std::path::Path::new(raw).file_stem()?.to_string_lossy().into_owned())
     }
 
     fn tombstone(&self, _retired: &Artifact, swhid: &Swhid) -> String {

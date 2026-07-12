@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-12
+
+### Added
+
+- `Policy::scan` locates the rewritable references in a survivor's source,
+  defaulting to `link("…")` calls. Override it to retarget a DSL's own edge
+  helpers (`depends-on("x.typ")`, `edge(kind, …)`) — the crate keeps owning the
+  mint, the dirty-tree guard, and the atomic `plan`/`apply`. Fixes the case
+  where inbound edges are authored as helper calls over plain strings, never
+  `link(...)`, which the old link-only scan could not see.
+- `Target { raw, range }`: a located rewritable reference, returned by `scan`
+  and fed straight to `typst_edit::Edit`.
+
+### Changed
+
+- `Policy::link_identity` renamed to `Policy::identity`: it now maps any raw
+  target string (from `scan`), not only a `link()` URL. Breaking — rename the
+  method in your `Policy` impl.
+
 ## [0.1.0] - 2026-07-05
 
 ### Added

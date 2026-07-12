@@ -5,17 +5,46 @@ use std::path::{Path, PathBuf};
 use swhid_mint::Swhid;
 use swhid_mint::test_support::repo_with;
 
-use super::{Artifact, Error, Plan, Policy, apply, is_clean, plan, toplevel};
+use super::{Artifact, Error, Plan, Policy, Target, apply, is_clean, plan, toplevel};
 
 /// A test policy: stems name artifacts; `swh:` URLs are existing tombstones.
 struct Stems;
 
 impl Policy for Stems {
-    fn link_identity(&self, url: &str) -> Option<String> {
-        if url.starts_with("swh:") {
+    fn identity(&self, raw: &str) -> Option<String> {
+        if raw.starts_with("swh:") {
             return None;
         }
-        Some(Path::new(url).file_stem()?.to_string_lossy().into_owned())
+        Some(Path::new(raw).file_stem()?.to_string_lossy().into_owned())
+    }
+
+    fn tombstone(&self, _retired: &Artifact, swhid: &Swhid) -> String {
+        format!("\"{}\"", swhid.render())
+    }
+}
+
+/// A policy whose edges are `depends-on("…")` helper calls, not `link(...)`. It
+/// overrides `scan` to find them on the parse plane — the whole point of the
+/// pluggable scan, and the shape a task tracker (e.g. mindtape) authors.
+struct HelperEdges;
+
+impl Policy for HelperEdges {
+    fn scan(&self, source: &str) -> Vec<Target> {
+        typst_edit::find_calls(source, "depends-on")
+            .into_iter()
+            .flat_map(|call| call.args)
+            .filter(|arg| {
+                arg.name.is_none() && source.as_bytes().get(arg.value_range.start) == Some(&b'"')
+            })
+            .map(|arg| Target {
+                raw: arg.value,
+                range: arg.value_range,
+            })
+            .collect()
+    }
+
+    fn identity(&self, raw: &str) -> Option<String> {
+        Some(Path::new(raw).file_stem()?.to_string_lossy().into_owned())
     }
 
     fn tombstone(&self, _retired: &Artifact, swhid: &Swhid) -> String {
@@ -171,4 +200,26 @@ fn existing_tombstone_links_left_untouched() {
     .unwrap();
     // The survivor's only link is an existing tombstone, not an edge to `gone`.
     assert!(p.rewrites.is_empty());
+}
+
+#[test]
+fn scan_override_retargets_helper_edges() {
+    // A survivor whose inbound edge is `depends-on("gone.typ")` — never
+    // `link(...)`. The default scan would miss it; `HelperEdges::scan` finds it,
+    // and the crate retargets it onto the tombstone just like a link edge.
+    let live = "#show: task.with(\n  links: depends-on(\"gone.typ\"),\n)\n";
+    let (_dir, root) = repo_with(&[("gone.typ", "gone\n"), ("live.typ", live)]);
+
+    let p = plan(
+        &[artifact(&root, "gone.typ")],
+        &[artifact(&root, "live.typ")],
+        &root,
+        &HelperEdges,
+    )
+    .unwrap();
+
+    assert_eq!(p.rewrites.len(), 1);
+    assert_eq!(p.rewrites[0].links, 1);
+    assert!(p.rewrites[0].contents.contains("swh:1:rev:"));
+    assert!(!p.rewrites[0].contents.contains("\"gone.typ\""));
 }

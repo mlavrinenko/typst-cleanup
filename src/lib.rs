@@ -2,23 +2,25 @@
 //!
 //! The shared cleanup skeleton across file-based trackers: refuse a dirty tree,
 //! mint a `swh:1:rev` tombstone per retired file ([`swhid_mint`]), rewrite inbound
-//! `link("…")` references in survivors ([`typst_edit`]) onto those tombstones, and
-//! delete the retired files — without committing, so the operator reviews and
-//! commits.
+//! references in survivors ([`typst_edit`]) onto those tombstones, and delete the
+//! retired files — without committing, so the operator reviews and commits.
 //!
 //! Atomic by construction: [`plan`] mints every tombstone and computes every edit
 //! in memory; not a byte is written until [`apply`] runs on a complete plan. A
 //! wrong-shaped file or an unrecoverable commit aborts the run with no changes.
 //!
-//! The crate knows nothing about what an artifact *is*. The consumer supplies the
-//! policy via [`Policy`]: which `link()` URLs name artifacts ([`Policy::link_identity`]),
-//! and how a retired artifact's tombstone link reads ([`Policy::tombstone`]). It
-//! also partitions its artifacts into the retired ([`Artifact`]s passed as
-//! `eligible`) and the survivors to scan.
+//! The crate knows nothing about what an artifact *is*, nor how its inbound edges
+//! are spelled. The consumer supplies the policy via [`Policy`]: where the
+//! rewritable references live ([`Policy::scan`] — `link("…")` calls by default,
+//! overridable for a DSL's own edge helpers), which of them name artifacts
+//! ([`Policy::identity`]), and how a retired artifact's tombstone reads
+//! ([`Policy::tombstone`]). It also partitions its artifacts into the retired
+//! ([`Artifact`]s passed as `eligible`) and the survivors to scan.
 
 mod git;
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 pub use git::{is_clean, toplevel};
@@ -37,18 +39,48 @@ pub struct Artifact {
     pub id: String,
 }
 
-/// Consumer policy: how `link()` URLs map to artifact identities, and how a
-/// retired artifact's tombstone link reads. Both methods are consumer-supplied —
-/// the crate bakes in no identity scheme or label format.
-pub trait Policy {
-    /// Map a `link("…")` URL to the artifact identity it targets, or `None` when
-    /// the URL is not an inbound artifact edge — an external URL, or an existing
-    /// tombstone that must be left untouched.
-    fn link_identity(&self, url: &str) -> Option<String>;
+/// A rewritable reference located in a survivor's source: the raw target string
+/// as authored and the byte range to splice.
+///
+/// Returned by [`Policy::scan`] and fed straight to [`typst_edit::Edit`] — the
+/// range covers the quoted string literal, quotes included, for a string target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The target string as authored, unquoted and unescaped (e.g. `"other.typ"`).
+    pub raw: String,
+    /// Byte range of the reference in the source, ready for [`typst_edit::Edit`].
+    pub range: Range<usize>,
+}
 
-    /// Replacement text for a retired artifact's inbound link argument: the
-    /// quoted SWHID tombstone URL, optionally carrying a synthesized label. Called
-    /// once per retired artifact; `swhid` is its freshly minted history pointer.
+/// Consumer policy: where a survivor's rewritable references are, which of them
+/// name artifacts, and how a retired artifact's tombstone reads. Every method is
+/// consumer-supplied — the crate bakes in no reference shape, identity scheme, or
+/// label format.
+pub trait Policy {
+    /// Locate every rewritable reference in a survivor's `source`.
+    ///
+    /// The default covers `link("…")` calls — the thin, common case. Override it
+    /// to scan a DSL's own edge helpers (`depends-on("x.typ")`, `edge(kind, …)`,
+    /// …) or any other reference shape; the crate keeps owning the mint, the
+    /// dirty-tree guard, and the atomic plan/apply around it.
+    fn scan(&self, source: &str) -> Vec<Target> {
+        typst_edit::find_link_targets(source)
+            .into_iter()
+            .map(|found| Target {
+                raw: found.url,
+                range: found.range,
+            })
+            .collect()
+    }
+
+    /// Map a raw target (from [`Policy::scan`]) to the artifact identity it
+    /// names, or `None` when it is not an inbound artifact edge — an external
+    /// URL, or an existing tombstone that must be left untouched.
+    fn identity(&self, raw: &str) -> Option<String>;
+
+    /// Replacement text for a retired artifact's inbound reference: the quoted
+    /// SWHID tombstone, optionally carrying a synthesized label. Called once per
+    /// retired artifact; `swhid` is its freshly minted history pointer.
     fn tombstone(&self, retired: &Artifact, swhid: &Swhid) -> String;
 }
 
@@ -177,9 +209,10 @@ pub fn plan<P: Policy>(
     })
 }
 
-/// Build the rewrite for one survivor, or `None` if it links to no retired
-/// artifact. Reads the source, locates every `link("…")`, and retargets those the
-/// policy resolves to a retired identity — leaving every other link untouched.
+/// Build the rewrite for one survivor, or `None` if it references no retired
+/// artifact. Reads the source, locates every reference the policy scans for, and
+/// retargets those it resolves to a retired identity — leaving every other
+/// reference untouched.
 fn plan_rewrite<P: Policy>(
     art: &Artifact,
     policy: &P,
@@ -188,8 +221,8 @@ fn plan_rewrite<P: Policy>(
     let source =
         std::fs::read_to_string(&art.abs).map_err(|err| Error::Read(art.rel.clone(), err))?;
     let mut edits = Vec::new();
-    for target in typst_edit::find_link_targets(&source) {
-        let Some(id) = policy.link_identity(&target.url) else {
+    for target in policy.scan(&source) {
+        let Some(id) = policy.identity(&target.raw) else {
             continue;
         };
         if let Some(replacement) = tombstones.get(&id) {

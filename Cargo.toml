@@ -3,7 +3,7 @@ members = [] # Add sub-crate paths here as the project grows
 
 [package]
 name = "typst-cleanup"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Consumer-blind orchestration for retiring Typst artifacts: dirty-tree guard, SWHID tombstone minting, and atomic inbound-link rewriting"
