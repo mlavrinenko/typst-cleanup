@@ -73,6 +73,15 @@ After editing a source, review the listed dependents, update them as needed, the
 run `just outdatty-update` to record the new state into `outdatty.lock` and commit
 it. Add or adjust groups whenever you introduce files that must move together.
 
+## Releasing
+
+Bump `version` in `Cargo.toml`, give it a dated `CHANGELOG.md` section, commit,
+push main and wait for CI. Then run `just release X.Y.Z --dry-run`, and
+`just release X.Y.Z` once it passes. The tag push is the only publish path:
+never `cargo publish` by hand. A release whose workflow failed is finished on
+the same tag with `gh workflow run release-lib.yml -f tag=vX.Y.Z`; a pushed tag never
+moves.
+
 ## Submitting Changes
 
 1. Run `just check` before submitting — it runs clippy, tests, file size, and drift checks
