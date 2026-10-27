@@ -66,3 +66,16 @@ jobs:
       # `just cover` wrote.
       - name: CRAP gate (fails above 30)
         run: nix develop --command just crap
+
+  # Windows has no Nix, so this job runs plain cargo, not `just check`: the
+  # other gates behave the same on every platform. What only Windows answers is
+  # path separators, such as the `/` a tombstone's `path=` must keep there.
+  # The runner's rustup installs the toolchain rust-toolchain.toml names.
+  windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+      - name: Test
+        run: cargo test --workspace --locked
