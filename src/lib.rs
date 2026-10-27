@@ -7,7 +7,12 @@
 //!
 //! Atomic by construction: [`plan`] mints every tombstone and computes every edit
 //! in memory; not a byte is written until [`apply`] runs on a complete plan. A
-//! wrong-shaped file or an unrecoverable commit aborts the run with no changes.
+//! wrong-shaped file or an unrecoverable commit aborts the run with no changes,
+//! and [`Error::Ineligible`] names every file that can't carry a tombstone.
+//!
+//! Git is needed only when a survivor references a retired artifact.
+//! [`referrers`] says which survivors do, with no git; when none do,
+//! [`delete_plan`] retires the artifacts by deleting them.
 //!
 //! The crate knows nothing about what an artifact *is*, nor how its inbound edges
 //! are spelled. The consumer supplies the policy via [`Policy`]: where the
@@ -17,12 +22,14 @@
 //! ([`Policy::tombstone`]). It also partitions its artifacts into the retired
 //! ([`Artifact`]s passed as `eligible`) and the survivors to scan.
 
+mod error;
 mod git;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+pub use error::{Error, Ineligible, Reason};
 pub use git::{is_clean, toplevel};
 // Re-exported because it appears in `Policy::tombstone`'s signature: consumers
 // implementing the trait need to name the minted history pointer's type.
@@ -124,75 +131,42 @@ impl Plan {
     }
 }
 
-/// Why a cleanup plan or apply failed.
-#[derive(Debug)]
-pub enum Error {
-    /// An eligible file lies outside the git repository root.
-    OutsideRepo(PathBuf),
-    /// Minting the tombstone for a file failed (untracked, dirty, or git error).
-    Mint(PathBuf, swhid_mint::git::Error),
-    /// Reading a surviving file failed.
-    Read(PathBuf, std::io::Error),
-    /// Writing or deleting a file during apply failed.
-    Write(PathBuf, std::io::Error),
-    /// Splicing a surviving file's links failed (overlap, bad span).
-    Rewrite(PathBuf, typst_edit::EditError),
-    /// A repository or status query failed.
-    Git(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::OutsideRepo(path) => {
-                write!(f, "{} is outside the git repository", path.display())
-            }
-            Self::Mint(path, err) => write!(f, "mint tombstone for {}: {err}", path.display()),
-            Self::Read(path, err) => write!(f, "read {}: {err}", path.display()),
-            Self::Write(path, err) => write!(f, "write {}: {err}", path.display()),
-            Self::Rewrite(path, err) => write!(f, "rewrite links in {}: {err}", path.display()),
-            Self::Git(msg) => write!(f, "git: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
 /// Compute the whole cleanup without touching disk.
 ///
-/// Mints a tombstone for every `eligible` artifact (failing the run if any file
-/// is untracked or its working bytes diverge from git) and splices every
-/// `survivor`'s inbound links onto those tombstones. `git_root` is the repository
-/// root every eligible path must lie within. Returns an empty [`Plan`] when
-/// `eligible` is empty.
+/// Mints a tombstone for every `eligible` artifact and splices every
+/// `survivor`'s inbound references onto those tombstones. `git_root` is the
+/// repository root every eligible path must lie within. Returns an empty
+/// [`Plan`] when `eligible` is empty. When no survivor references a retired
+/// artifact, [`delete_plan`] retires them without git; [`referrers`] says which.
 ///
 /// # Errors
-/// [`Error`] on a file outside the repository, a mint failure, a survivor read
-/// failure, or a rejected splice — before any byte is written.
+/// [`Error::Ineligible`] naming every artifact outside the repository,
+/// untracked, or diverging from git; else a survivor read failure or a
+/// rejected splice. Each comes before any byte is written.
 pub fn plan<P: Policy>(
     eligible: &[Artifact],
     survivors: &[Artifact],
     git_root: &Path,
     policy: &P,
 ) -> Result<Plan, Error> {
+    let mut tombstones: HashMap<String, String> = HashMap::new();
+    let mut ineligible = Vec::new();
+    for art in eligible {
+        match mint(art, git_root) {
+            Ok(id) => {
+                tombstones.insert(art.id.clone(), policy.tombstone(art, &id));
+            }
+            Err(reason) => ineligible.push(Ineligible {
+                artifact: art.clone(),
+                reason,
+            }),
+        }
+    }
+    if !ineligible.is_empty() {
+        return Err(Error::Ineligible(ineligible));
+    }
     if eligible.is_empty() {
         return Ok(Plan::default());
-    }
-    let mut tombstones: HashMap<String, String> = HashMap::new();
-    let mut deletions = Vec::new();
-    for art in eligible {
-        let git_rel = slash_path(
-            art.abs
-                .strip_prefix(git_root)
-                .map_err(|_| Error::OutsideRepo(art.abs.clone()))?,
-        );
-        let id = swhid_mint::git::mint_rev_path(git_root, &git_rel)
-            .map_err(|err| Error::Mint(art.rel.clone(), err))?;
-        tombstones.insert(art.id.clone(), policy.tombstone(art, &id));
-        deletions.push(Deletion {
-            abs: art.abs.clone(),
-            rel: art.rel.clone(),
-        });
     }
 
     let mut rewrites = Vec::new();
@@ -201,13 +175,67 @@ pub fn plan<P: Policy>(
             rewrites.push(rewrite);
         }
     }
-
-    deletions.sort_by(|a, b| a.rel.cmp(&b.rel));
     rewrites.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(Plan {
-        deletions,
         rewrites,
+        ..delete_plan(eligible)
     })
+}
+
+/// The plan that deletes every `eligible` artifact and rewrites nothing: no
+/// git, no tombstone, no dirty-tree guard. Use it when [`referrers`] finds no
+/// survivor that names a retired artifact, so nothing needs a tombstone.
+#[must_use]
+pub fn delete_plan(eligible: &[Artifact]) -> Plan {
+    let mut deletions: Vec<Deletion> = eligible
+        .iter()
+        .map(|art| Deletion {
+            abs: art.abs.clone(),
+            rel: art.rel.clone(),
+        })
+        .collect();
+    deletions.sort_by(|a, b| a.rel.cmp(&b.rel));
+    Plan {
+        deletions,
+        rewrites: Vec::new(),
+    }
+}
+
+/// Which retired identities each survivor references, keyed by the survivor's
+/// display path. A survivor that names no retired artifact is left out, so an
+/// empty map means nothing needs a tombstone. Uses the same
+/// [`Policy::scan`] and [`Policy::identity`] as [`plan`], and needs no git.
+///
+/// # Errors
+/// [`Error::Read`] on the first survivor that can't be read.
+pub fn referrers<P: Policy>(
+    eligible: &[Artifact],
+    survivors: &[Artifact],
+    policy: &P,
+) -> Result<BTreeMap<PathBuf, BTreeSet<String>>, Error> {
+    let retired: BTreeSet<&str> = eligible.iter().map(|art| art.id.as_str()).collect();
+    let mut found = BTreeMap::new();
+    for art in survivors {
+        let source = read(art)?;
+        let ids: BTreeSet<String> = named_targets(&source, policy)
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|id| retired.contains(id.as_str()))
+            .collect();
+        if !ids.is_empty() {
+            found.insert(art.rel.clone(), ids);
+        }
+    }
+    Ok(found)
+}
+
+/// Mint the tombstone for one eligible artifact, or say why it can't carry one.
+fn mint(art: &Artifact, git_root: &Path) -> Result<Swhid, Reason> {
+    let rel = art
+        .abs
+        .strip_prefix(git_root)
+        .map_err(|_| Reason::OutsideRepo)?;
+    swhid_mint::git::mint_rev_path(git_root, &slash_path(rel)).map_err(Reason::Mint)
 }
 
 /// A repository-relative path as git spells it, `/`-separated on every
@@ -219,6 +247,24 @@ fn slash_path(rel: &Path) -> String {
         .join("/")
 }
 
+/// A survivor's source.
+fn read(art: &Artifact) -> Result<String, Error> {
+    std::fs::read_to_string(&art.abs).map_err(|err| Error::Read(art.rel.clone(), err))
+}
+
+/// Every reference the policy scans for in `source` that names an artifact,
+/// with the identity it names.
+fn named_targets<P: Policy>(source: &str, policy: &P) -> Vec<(Target, String)> {
+    policy
+        .scan(source)
+        .into_iter()
+        .filter_map(|target| {
+            let id = policy.identity(&target.raw)?;
+            Some((target, id))
+        })
+        .collect()
+}
+
 /// Build the rewrite for one survivor, or `None` if it references no retired
 /// artifact. Reads the source, locates every reference the policy scans for, and
 /// retargets those it resolves to a retired identity — leaving every other
@@ -228,20 +274,14 @@ fn plan_rewrite<P: Policy>(
     policy: &P,
     tombstones: &HashMap<String, String>,
 ) -> Result<Option<Rewrite>, Error> {
-    let source =
-        std::fs::read_to_string(&art.abs).map_err(|err| Error::Read(art.rel.clone(), err))?;
-    let mut edits = Vec::new();
-    for target in policy.scan(&source) {
-        let Some(id) = policy.identity(&target.raw) else {
-            continue;
-        };
-        if let Some(replacement) = tombstones.get(&id) {
-            edits.push(typst_edit::Edit::new(
-                target.range.clone(),
-                replacement.clone(),
-            ));
-        }
-    }
+    let source = read(art)?;
+    let edits: Vec<typst_edit::Edit> = named_targets(&source, policy)
+        .into_iter()
+        .filter_map(|(target, id)| {
+            let replacement = tombstones.get(&id)?;
+            Some(typst_edit::Edit::new(target.range, replacement.clone()))
+        })
+        .collect();
     if edits.is_empty() {
         return Ok(None);
     }

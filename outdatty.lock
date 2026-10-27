@@ -3,10 +3,11 @@ algorithm: blake3
 groups:
   api-docs:
     source:
+      src/error.rs: bc49112aa5046012dd96940ccaf1599e0d703edc2948eb7d9685e043d662a75b
       src/git.rs: 97386a8634b8ba89a45339c06b46dca4a57d5ebede65960fd82ca64fcda7f2ce
-      src/lib.rs: fcc110002bb11e21b5f893003172d2da22c408e0e9436266075b59c7d2ae5011
+      src/lib.rs: df367dd20d58cf7d9ac15163186a3d899d1874e4176e99e990557ef37ff76d0c
     dependents:
-      README.md: 3c2414b9b46d3818ce0a7ac0aa43a35f82a96ff2098acb028a853067428b02ee
+      README.md: cebc13813a7de84b6a4ee0a3cbe4800c124579e20980263388cd0c0bbc272096
       www/index.html: 867e9d4532fb5891b8dcfa062df6119914d2ad58a1136d18047a8faf2e637a9f
   dev-docs:
     source:
@@ -19,4 +20,4 @@ groups:
     source:
       Cargo.toml: 14cd237cd4ab2c51d5947ef131f8c54bd89460832730d95c1ca06750948e43c3
     dependents:
-      CHANGELOG.md: ccfe51f0b6b51a6ef933294caefc39240e49cc0a8285b03345adccb632dba972
+      CHANGELOG.md: 916afd2da520d5bf1366c9c639bad4d34b66c0623e26edbebc4642d73fab962a

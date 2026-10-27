@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `referrers` says which survivors reference which retired artifacts, through
+  the same `Policy::scan` and `Policy::identity` as `plan`, with no git. An
+  empty answer means nothing needs a tombstone.
+- `delete_plan` retires artifacts nothing references: deletions only, no git,
+  no tombstone.
+
+### Changed
+
+- `plan` mints every eligible artifact before it fails, and
+  `Error::Ineligible` lists each one that can't carry a tombstone with its
+  `Reason`, so a caller reports them all in one pass. It replaces
+  `Error::OutsideRepo` and `Error::Mint`, which named only the first. Breaking:
+  match `Error::Ineligible` and read each entry's `Reason::OutsideRepo` or
+  `Reason::Mint`.
+
 ## [0.2.1] - 2026-10-28
 
 ### Fixed

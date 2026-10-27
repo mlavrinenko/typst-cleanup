@@ -15,7 +15,9 @@ cargo add typst-cleanup
 ## Usage
 
 ```rust
-use typst_cleanup::{Artifact, Policy, Swhid, apply, is_clean, plan, toplevel};
+use typst_cleanup::{
+    Artifact, Policy, Swhid, apply, delete_plan, is_clean, plan, referrers, toplevel,
+};
 
 // The crate is consumer-blind: it knows nothing about what an artifact *is* or
 // how its inbound edges are spelled. Supply identity (which targets name
@@ -38,12 +40,21 @@ if !is_clean(&root)? {
     return Err("working tree is dirty".into());
 }
 
-// `plan` mints a tombstone for every eligible artifact and splices survivors'
-// inbound links onto it, all in memory. `apply` writes and deletes; call it
-// only once you're happy with the plan.
-let computed = plan(&eligible, &survivors, &root, &Stems)?;
+// Nothing links to the eligible artifacts? Then nothing needs a tombstone and
+// `delete_plan` retires them without git. Otherwise `plan` mints a tombstone
+// for every eligible artifact and splices survivors' inbound links onto it,
+// all in memory. `apply` writes and deletes; call it only once you're happy
+// with the plan.
+let computed = if referrers(&eligible, &survivors, &Stems)?.is_empty() {
+    delete_plan(&eligible)
+} else {
+    plan(&eligible, &survivors, &root, &Stems)?
+};
 apply(&computed)?;
 ```
+
+When some eligible files are untracked or dirty, `plan` fails with
+`Error::Ineligible`, which lists every one of them, so you fix them in one go.
 
 The crate does not commit — the caller reviews the diff and commits.
 

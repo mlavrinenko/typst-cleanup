@@ -11,6 +11,7 @@ groups:
     source:
       - src/lib.rs
       - src/git.rs
+      - src/error.rs
     dependents:
       - README.md
       - www/index.html

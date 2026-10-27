@@ -1,11 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use swhid_mint::Swhid;
 use swhid_mint::test_support::repo_with;
 
-use super::{Artifact, Error, Plan, Policy, Target, apply, is_clean, plan, toplevel};
+use super::{
+    Artifact, Error, Plan, Policy, Reason, Target, apply, delete_plan, is_clean, plan, referrers,
+    toplevel,
+};
 
 /// A test policy: stems name artifacts; `swh:` URLs are existing tombstones.
 struct Stems;
@@ -241,4 +245,103 @@ fn scan_override_retargets_helper_edges() {
     assert_eq!(p.rewrites[0].links, 1);
     assert!(p.rewrites[0].contents.contains("swh:1:rev:"));
     assert!(!p.rewrites[0].contents.contains("\"gone.typ\""));
+}
+
+#[test]
+fn plan_names_every_artifact_that_cannot_carry_a_tombstone() {
+    let (_dir, root) = repo_with(&[("gone.typ", "gone\n"), ("dirty.typ", "dirty\n")]);
+    std::fs::write(root.join("dirty.typ"), "changed\n").unwrap();
+    std::fs::write(root.join("orphan.typ"), "orphan\n").unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = artifact(elsewhere.path(), "outside.typ");
+    let eligible = [
+        artifact(&root, "gone.typ"),
+        artifact(&root, "dirty.typ"),
+        artifact(&root, "orphan.typ"),
+        outside.clone(),
+    ];
+
+    let Err(Error::Ineligible(found)) = plan(&eligible, &[], &root, &Stems) else {
+        panic!("expected every ineligible artifact");
+    };
+
+    let ids: Vec<&str> = found.iter().map(|bad| bad.artifact.id.as_str()).collect();
+    assert_eq!(ids, ["dirty", "orphan", "outside"]);
+    assert!(matches!(
+        found[0].reason,
+        Reason::Mint(swhid_mint::git::Error::Dirty(_))
+    ));
+    assert!(matches!(
+        found[1].reason,
+        Reason::Mint(swhid_mint::git::Error::NotTracked(_))
+    ));
+    assert!(matches!(found[2].reason, Reason::OutsideRepo));
+    assert_eq!(found[2].artifact, outside);
+}
+
+#[test]
+fn referrers_maps_each_survivor_to_the_retired_ids_it_names() {
+    let both = "#link(\"gone.typ\") #link(\"kept.typ\") #link(\"also.typ\")\n";
+    let (_dir, root) = repo_with(&[
+        ("gone.typ", "#link(\"also.typ\")\n"),
+        ("also.typ", "also\n"),
+        ("kept.typ", "kept\n"),
+        ("live.typ", both),
+        ("quiet.typ", "#link(\"kept.typ\")\n"),
+    ]);
+    let eligible = [artifact(&root, "gone.typ"), artifact(&root, "also.typ")];
+    let survivors = [
+        artifact(&root, "kept.typ"),
+        artifact(&root, "live.typ"),
+        artifact(&root, "quiet.typ"),
+    ];
+
+    let found = referrers(&eligible, &survivors, &Stems).unwrap();
+
+    let ids: BTreeSet<String> = ["also".to_owned(), "gone".to_owned()].into();
+    assert_eq!(found, BTreeMap::from([(PathBuf::from("live.typ"), ids)]));
+}
+
+#[test]
+fn referrers_fails_on_a_survivor_it_cannot_read() {
+    let (_dir, root) = repo_with(&[("gone.typ", "gone\n")]);
+    let missing = artifact(&root, "missing.typ");
+
+    let result = referrers(&[artifact(&root, "gone.typ")], &[missing], &Stems);
+
+    assert!(matches!(result, Err(Error::Read(path, _)) if path == Path::new("missing.typ")));
+}
+
+#[test]
+fn delete_plan_deletes_in_order_without_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let eligible = [artifact(dir.path(), "b.typ"), artifact(dir.path(), "a.typ")];
+
+    let p = delete_plan(&eligible);
+
+    let rels: Vec<&Path> = p.deletions.iter().map(|gone| gone.rel.as_path()).collect();
+    assert_eq!(rels, [Path::new("a.typ"), Path::new("b.typ")]);
+    assert_eq!(p.deletions[0].abs, dir.path().join("a.typ"));
+    assert!(p.rewrites.is_empty());
+}
+
+#[test]
+fn ineligible_error_names_each_file_and_why() {
+    let (_dir, root) = repo_with(&[("gone.typ", "gone\n")]);
+    std::fs::write(root.join("orphan.typ"), "orphan\n").unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let eligible = [
+        artifact(elsewhere.path(), "outside.typ"),
+        artifact(&root, "orphan.typ"),
+    ];
+
+    let err = plan(&eligible, &[], &root, &Stems).unwrap_err();
+
+    let orphan = swhid_mint::git::Error::NotTracked("orphan.typ".to_owned());
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "can't mint a tombstone for outside.typ: outside the git repository; orphan.typ: {orphan}"
+        )
+    );
 }
