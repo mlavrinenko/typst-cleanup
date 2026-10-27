@@ -80,7 +80,8 @@ pub trait Policy {
 
     /// Replacement text for a retired artifact's inbound reference: the quoted
     /// SWHID tombstone, optionally carrying a synthesized label. Called once per
-    /// retired artifact; `swhid` is its freshly minted history pointer.
+    /// retired artifact; `swhid` is its freshly minted history pointer, whose
+    /// path is `/`-separated on every platform.
     fn tombstone(&self, retired: &Artifact, swhid: &Swhid) -> String;
 }
 
@@ -180,11 +181,11 @@ pub fn plan<P: Policy>(
     let mut tombstones: HashMap<String, String> = HashMap::new();
     let mut deletions = Vec::new();
     for art in eligible {
-        let git_rel = art
-            .abs
-            .strip_prefix(git_root)
-            .map_err(|_| Error::OutsideRepo(art.abs.clone()))?
-            .to_string_lossy();
+        let git_rel = slash_path(
+            art.abs
+                .strip_prefix(git_root)
+                .map_err(|_| Error::OutsideRepo(art.abs.clone()))?,
+        );
         let id = swhid_mint::git::mint_rev_path(git_root, &git_rel)
             .map_err(|err| Error::Mint(art.rel.clone(), err))?;
         tombstones.insert(art.id.clone(), policy.tombstone(art, &id));
@@ -207,6 +208,15 @@ pub fn plan<P: Policy>(
         deletions,
         rewrites,
     })
+}
+
+/// A repository-relative path as git spells it, `/`-separated on every
+/// platform, so the SWHID minted from it resolves on any machine.
+fn slash_path(rel: &Path) -> String {
+    rel.components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Build the rewrite for one survivor, or `None` if it references no retired

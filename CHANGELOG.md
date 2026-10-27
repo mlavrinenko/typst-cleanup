@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A tombstone minted on Windows resolves on every machine. `plan` minted its
+  SWHID from the platform path, so it wrote `path=tasks\gone.typ` where git
+  says `path=tasks/gone.typ`. It writes `/` on every platform now.
+
 ## [0.2.0] - 2026-07-12
 
 ### Added

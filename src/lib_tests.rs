@@ -89,6 +89,25 @@ fn plan_mints_tombstone_and_rewrites_survivor() {
     assert!(!p.rewrites[0].contents.contains("link(\"gone.typ\")"));
 }
 
+/// A tombstone's `path=` is a git path, `/`-separated on every platform. The
+/// retired file's platform path, `tasks\gone.typ` on Windows, never reaches it.
+#[test]
+fn tombstone_path_uses_slashes_for_a_file_in_a_subfolder() {
+    let (_dir, root) = repo_with(&[("tasks/gone.typ", "gone\n"), ("live.typ", LIVE)]);
+    let rel = Path::new("tasks").join("gone.typ");
+    let eligible = vec![Artifact {
+        abs: root.join(&rel),
+        rel,
+        id: "gone".to_owned(),
+    }];
+    let survivors = vec![artifact(&root, "live.typ")];
+
+    let p = plan(&eligible, &survivors, &root, &Stems).unwrap();
+
+    let contents = &p.rewrites[0].contents;
+    assert!(contents.contains(";path=tasks/gone.typ\""), "{contents}");
+}
+
 #[test]
 fn plan_writes_nothing_until_apply() {
     // The dry-run guarantee: plan() touches no disk; only apply() writes.
