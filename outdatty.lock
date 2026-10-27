@@ -18,6 +18,6 @@ groups:
       CONTRIBUTING.md: b5884461dda49343f527d435cd3adebdc27ebe905cc05c19485e854f1bbf0840
   release-notes:
     source:
-      Cargo.toml: 14cd237cd4ab2c51d5947ef131f8c54bd89460832730d95c1ca06750948e43c3
+      Cargo.toml: d35dee95bd58334b79be20fa99d039d8e1abf07da94d40f1db880e10afe64414
     dependents:
-      CHANGELOG.md: 916afd2da520d5bf1366c9c639bad4d34b66c0623e26edbebc4642d73fab962a
+      CHANGELOG.md: 3378bc26f34c16632ca55b3f4b4d365fd03559d4a5676efc7729a34df351ae1f
